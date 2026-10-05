@@ -1,0 +1,21 @@
+Source: fusetea
+Section: utils
+Priority: optional
+Maintainer: Louis Wolfers <firstname.lastname@synacktiv.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ dh-python,
+ python3-all,
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+
+Package: python3-fusetea
+Architecture: all
+Multi-Arch: foreign
+Depends:
+ ${misc:Depends},
+ ${python3:Depends},
+ python3-requests,
+ python3-fusepy,
+ python3-bs4
+Description: Fusetea command-line interface.
