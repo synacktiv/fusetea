@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fusetea"
+dynamic = ["version"]
+description = "Collection of FUSE drivers for technologies that support partial reads"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "requests",
+    "fusepy",
+    "beautifulsoup4",
+    "urllib3",
+]
+
+[project.scripts]
+fusetea = "fusetea.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["fusetea*"]

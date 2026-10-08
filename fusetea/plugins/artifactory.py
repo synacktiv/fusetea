@@ -5,7 +5,7 @@ import time
 import pathlib
 
 from stat import S_IFDIR, S_IFREG
-from fusepy import FUSE, Operations
+from fusetea.utils.fusecompat import FUSE, Operations
 
 from fusetea.utils.accesslog import default_log_path, log_entry, open_log
 from fusetea.utils.readahead import Readahead

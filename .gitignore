@@ -1,0 +1,12 @@
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.deb
+debian/changelog
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/files
+debian/python3-fusetea/
+debian/*.substvars
+debian/*.log

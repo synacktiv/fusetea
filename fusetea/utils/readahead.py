@@ -1,5 +1,5 @@
 from functools import lru_cache
-from fusepy import Operations, LoggingMixIn
+from fusetea.utils.fusecompat import Operations, LoggingMixIn
 
 
 class Readahead(LoggingMixIn, Operations):

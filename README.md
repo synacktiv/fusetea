@@ -10,6 +10,12 @@ Modules available:
 
 Grab a .deb from the [releases](https://github.com/synacktiv/fusetea/releases).
 
+Or install it with pipx / uv. fusepy needs libfuse2, which you must install yourself (`apt install libfuse2t64`, or `libfuse2` on older releases):
+```console
+$ pipx install git+https://github.com/synacktiv/fusetea
+$ uv tool install git+https://github.com/synacktiv/fusetea
+```
+
 ## Artifactory
 
 ```console

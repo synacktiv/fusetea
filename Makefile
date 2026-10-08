@@ -1,5 +1,5 @@
 PROJNAME=python3-fusetea
-VERSION_BASE      = 1.0.0
+VERSION_BASE      = $(shell cat VERSION)
 PROJECT_REVISION  = $(shell git rev-list --count HEAD)
 PROJECT_VERSION  ?= $(VERSION_BASE).$(PROJECT_REVISION)
 PROJECT_DATE     ?= $(shell date --utc -R)

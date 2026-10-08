@@ -5,7 +5,7 @@ import pathlib
 
 from stat import S_IFDIR, S_IFREG
 
-from fusepy import FUSE, Operations
+from fusetea.utils.fusecompat import FUSE, Operations
 from bs4 import BeautifulSoup
 import requests
 import requests.auth

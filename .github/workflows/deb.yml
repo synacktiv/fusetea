@@ -1,0 +1,61 @@
+name: deb
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Build on Debian so ${python3:Depends} matches the target distribution
+    container: debian:trixie
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates build-essential debhelper dh-python python3-all
+
+      - uses: actions/checkout@v7
+        with:
+          # The version uses the commit count, which needs the full history
+          fetch-depth: 0
+
+      - name: Build .deb
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          make deb
+
+      - id: version
+        run: echo "version=$(make -s version)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deb
+          path: "*.deb"
+          if-no-files-found: error
+
+  # Publish a release on every push to master
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: deb
+
+      # GitHub requires a tag for every release: gh creates it on the built commit
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          gh release view "v$VERSION" >/dev/null 2>&1 || gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes
+          gh release upload "v$VERSION" *.deb --clobber
