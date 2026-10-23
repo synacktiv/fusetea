@@ -5,6 +5,8 @@ Collection of FUSE drivers for technologies that support partially reading the c
 Modules available:
 - [Artifactory](./fusetea/plugins/artifactory.py)
 - [vCenter](./fusetea/plugins/vcenter.py)
+- [Folder](./fusetea/plugins/folder.py): apache2 / nginx directory listings
+- [File](./fusetea/plugins/file.py): a single file
 
 ## Installation
 
@@ -60,4 +62,33 @@ The `-s` flag is required because LVMs will try to write data on the disk while 
 # umount /tmp/sso
 # lvchange -an rl_sso # lvchange -an <volume_group>
 # qemu-nbd -d /dev/nbd1
+```
+
+## Folder
+
+Mounts a directory listing served by apache2 or nginx (`autoindex`), the URL must point to the directory:
+
+```console
+$ fusetea folder https://files.corp.local/pub/ /tmp/output/
+```
+
+Subdirectories are browsed as well. Exact file sizes are fetched with a `HEAD` request the first time a file is accessed, as listings may only show approximate sizes (e.g. `1.2K`).
+
+## File
+
+Mounts a single file, the URL must point to the file. It is exposed at the root of the mount point with its name from the URL:
+
+```console
+$ fusetea file https://files.corp.local/pub/disk.vmdk /tmp/output/
+$ ls /tmp/output/
+disk.vmdk
+```
+
+### Authentication
+
+Both `folder` and `file` support basic authentication and custom headers (`-H` can be repeated):
+
+```console
+$ fusetea folder https://files.corp.local/pub/ /tmp/output/ -u user -p 'fus3t3a'
+$ fusetea file https://files.corp.local/pub/disk.vmdk /tmp/output/ -H 'Cookie: session=...' -H 'X-Api-Key: ...'
 ```

@@ -1,4 +1,7 @@
-from functools import lru_cache
+import threading
+from collections import OrderedDict
+from concurrent.futures import Future
+
 from fusetea.utils.fusecompat import Operations, LoggingMixIn
 
 
@@ -9,8 +12,47 @@ class Readahead(LoggingMixIn, Operations):
         self.cache_size = cache_size
         self.plugin = plugin
 
-        # Cache the bound method
-        self.cached_read_function = lru_cache(maxsize=self.cache_size)(plugin.read)
+        # LRU cache of pages: (path, page offset, page size) -> data
+        self._pages = OrderedDict()
+        # pages being downloaded: (path, page offset, page size) -> Future
+        # FUSE runs concurrent reads (e.g. kernel readahead) that often ask for
+        # the same page, they wait for the first download instead of
+        # downloading the page again
+        self._pending = {}
+        self._lock = threading.Lock()
+
+    def fetch_page(self, path, read_size, page_offset, fh):
+        key = (path, page_offset, read_size)
+
+        with self._lock:
+            if key in self._pages:
+                self._pages.move_to_end(key)
+                return self._pages[key]
+            future = self._pending.get(key)
+            downloader = future is None
+            if downloader:
+                future = self._pending[key] = Future()
+
+        if not downloader:
+            return future.result()
+
+        try:
+            data = self.plugin.read(path, read_size, page_offset, fh)
+        except BaseException as e:
+            with self._lock:
+                del self._pending[key]
+            future.set_exception(e)
+            raise
+
+        with self._lock:
+            del self._pending[key]
+            # do not keep incomplete pages, they will be downloaded again
+            if len(data) == read_size:
+                self._pages[key] = data
+                while len(self._pages) > self.cache_size:
+                    self._pages.popitem(last=False)
+        future.set_result(data)
+        return data
 
     def read(self, path, size, offset, fh):
         if size == 0:
@@ -38,7 +80,7 @@ class Readahead(LoggingMixIn, Operations):
             read_size = min(self.page_size, file_size - page_offset)
 
             # Fetch the data and append it
-            data += self.cached_read_function(path, read_size, page_offset, fh)
+            data += self.fetch_page(path, read_size, page_offset, fh)
 
         # Calculate exact slice within the concatenated pages
         relative_offset = offset % self.page_size

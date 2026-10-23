@@ -2,8 +2,8 @@
 # Due to a name clash with the existing API-incompatible python-fuse package, the importable module name for fusepy in Debian is 'fusepy' instead of upstream's 'fuse'.
 # This is a hack to support pipx/uv installations and .deb ones
 try:
-    from fusepy import FUSE, Operations, LoggingMixIn
+    from fusepy import FUSE, Operations, LoggingMixIn, FuseOSError
 except ImportError:
-    from fuse import FUSE, Operations, LoggingMixIn
+    from fuse import FUSE, Operations, LoggingMixIn, FuseOSError
 
-__all__ = ["FUSE", "Operations", "LoggingMixIn"]
+__all__ = ["FUSE", "Operations", "LoggingMixIn", "FuseOSError"]
