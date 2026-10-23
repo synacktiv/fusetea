@@ -3,24 +3,28 @@
 import time
 import pathlib
 
+from errno import ENOENT
 from stat import S_IFDIR, S_IFREG
 
-from fusetea.utils.fusecompat import FUSE, Operations
+from fusetea.utils.fusecompat import FUSE, FuseOSError, Operations
 from bs4 import BeautifulSoup
 import requests
 import requests.auth
 
 from fusetea.utils.accesslog import default_log_path, log_entry, open_log
 from fusetea.utils.readahead import Readahead
-from fusetea.utils.stealthysession import StealthySession
+from fusetea.utils.stealthysession import StealthySession, add_user_agent_argument
 from fusetea.utils.exceptions import InvalidCredentialsException
+from fusetea.utils.retry import add_retry_arguments, expect_length, request_with_retry
 
 
 
 class VCenter(Operations):
-    def __init__(self, host, headers=None, user=None, password=None, access_log=None):
+    def __init__(self, host, headers=None, user=None, password=None, access_log=None, timeout=10, retries=5, user_agent=None):
         self.host = host
-        self.session = StealthySession(headers=headers)
+        self.timeout = timeout
+        self.retries = retries
+        self.session = StealthySession(headers=headers, user_agent=user_agent)
         self._log = open_log("vcenter", access_log)
 
         self.user = user
@@ -29,6 +33,9 @@ class VCenter(Operations):
         self.check_authentication()
 
         self.cache = {}
+        # datacenter paths as returned by vCenter, which may include parent
+        # folders (e.g. "Europe/EU-1"), populated lazily by list_datacenters
+        self.datacenters = None
 
     def extract_csrf_token(self, response):
         soup = BeautifulSoup(response, "lxml")
@@ -56,13 +63,65 @@ class VCenter(Operations):
                 raise InvalidCredentialsException("Invalid credentials")
 
 
+    def get_datacenters(self):
+        if self.datacenters is None:
+            self.list_datacenters()
+        return self.datacenters
+
+    def split_path(self, path):
+        # datacenters can be nested in folders, so they span a variable number
+        # of path components: /<folder>/.../<datacenter>/<datastore>/<path>
+        # returns (None, None, "") if path is above any datacenter
+        parts = pathlib.PurePath(path).parts[1:]
+        for datacenter in self.get_datacenters():
+            dc_parts = tuple(datacenter.split("/"))
+            if parts[: len(dc_parts)] == dc_parts:
+                rest = parts[len(dc_parts) :]
+                datastore = rest[0] if rest else None
+                return datacenter, datastore, "/".join(rest[1:])
+        return None, None, ""
+
+    def list_folder(self, path):
+        # lists the children of a folder containing datacenters
+        parts = pathlib.PurePath(path).parts[1:]
+        children = []
+        for datacenter in self.get_datacenters():
+            dc_parts = tuple(datacenter.split("/"))
+            if len(dc_parts) > len(parts) and dc_parts[: len(parts)] == parts:
+                child = dc_parts[len(parts)]
+                if child not in children:
+                    children.append(child)
+        return children
+
+    def request(self, url, params=None, headers=None, expected_length=None):
+        if not self.session.auth:
+            # we are performing AD authentication, CSRF token needed (do not ask me why)
+            method = "POST"
+            kwargs = {"data": {"VMware-CSRF-Token": self.csrf_token}}
+        else:
+            # this can happen when performing local authentication
+            method = "GET"
+            kwargs = {}
+        return request_with_retry(
+            self.session,
+            method,
+            url,
+            self.timeout,
+            self.retries,
+            log=self._log,
+            label=self.host,
+            validate=expect_length(expected_length) if expected_length is not None else None,
+            headers=headers,
+            params=params,
+            verify=False,
+            **kwargs,
+        )
+
     def read(self, path, size, offset, fh):
-        pure_path = pathlib.PurePath(path)
-        datacenter = pure_path.parts[1]
-        datastore = pure_path.parts[2]
-        path_within_datastore = "/".join(pure_path.parts[3:])
+        datacenter, datastore, path_within_datastore = self.split_path(path)
 
         headers = {}
+        expected_length = None
 
         # do not send the headers if we are asking for the whole file
         if not (offset == 0 and size >= self.cache[path]["st_size"]):
@@ -71,28 +130,12 @@ class VCenter(Operations):
                     "Range": f"bytes={offset}-{(offset+size)-1}",
                 }
             )
+            expected_length = min(size, self.cache[path]["st_size"] - offset)
 
         url = self.host + "folder" + "/" + path_within_datastore
         params = {"dcPath": datacenter, "dsName": datastore}
 
-        if not self.session.auth:
-            # we are performing AD authentication, CSRF token needed (do not ask me why)
-            data = {"VMware-CSRF-Token": self.csrf_token}
-            response = self.session.post(
-                url,
-                data=data,
-                headers=headers,
-                params=params,
-                verify=False,
-            )
-        else:
-            # this can happen when performing local authentication
-            response = self.session.get(
-                url,
-                headers=headers,
-                params=params,
-                verify=False,
-            )
+        response = self.request(url, params=params, headers=headers, expected_length=expected_length)
 
         log_entry(self._log, "read", label=self.host, path=path, offset=offset, size=size)
         return response.content
@@ -219,64 +262,49 @@ class VCenter(Operations):
 
     def list_datacenters(self):
         # lists all datacenters
-        if not self.session.auth:
-            data = {"VMware-CSRF-Token": self.csrf_token}
-            response = self.session.post(self.host + "folder", data=data)
-        else:
-            response = self.session.get(self.host + "folder")
-        return self.parse_generic_listing(response.text)
+        response = self.request(self.host + "folder")
+        self.datacenters = self.parse_generic_listing(response.text)
+        return self.datacenters
 
     def list_datastores(self, datacenter):
         # lists all datastores within a datacenter
         params = {"dcPath": datacenter}
-        if not self.session.auth:
-            data = {"VMware-CSRF-Token": self.csrf_token}
-            response = self.session.post(self.host + "folder", params=params, data=data)
-        else:
-            response = self.session.get(self.host + "folder", params=params)
+        response = self.request(self.host + "folder", params=params)
         return self.parse_generic_listing(response.text, datacenter=datacenter)
 
     def list_datastore(self, datacenter, datastore, path_within_datastore):
         # lists a specific datastore
         params = {"dcPath": datacenter, "dsName": datastore}
-        if not self.session.auth:
-            data = {"VMware-CSRF-Token": self.csrf_token}
-            response = self.session.post(
-                self.host + "folder" + "/" + path_within_datastore,
-                params=params,
-                data=data,
-            )
-        else:
-            response = self.session.get(
-                self.host + "folder" + "/" + path_within_datastore, params=params
-            )
+        response = self.request(
+            self.host + "folder" + "/" + path_within_datastore, params=params
+        )
         return self.parse_datastore_listing(
             response.text, datacenter, datastore, path_within_datastore
         )
 
     def readdir(self, path, fh):
         contents = [".", ".."]
-        pure_path = pathlib.PurePath(path)
-        match len(pure_path.parts):
-            case 1:
-                contents.extend(self.list_datacenters())
-            case 2:
-                datacenter = pure_path.parts[1]
-                contents.extend(self.list_datastores(datacenter))
-            case _:
-                datacenter = pure_path.parts[1]
-                datastore = pure_path.parts[2]
-                path_within_datastore = "/".join(pure_path.parts[3:])
-                contents.extend(
-                    self.list_datastore(datacenter, datastore, path_within_datastore)
-                )
+        if path == "/":
+            # refresh the datacenters list
+            self.list_datacenters()
+        datacenter, datastore, path_within_datastore = self.split_path(path)
+        if datacenter is None:
+            contents.extend(self.list_folder(path))
+        elif datastore is None:
+            contents.extend(self.list_datastores(datacenter))
+        else:
+            contents.extend(
+                self.list_datastore(datacenter, datastore, path_within_datastore)
+            )
         log_entry(self._log, "readdir", label=self.host, path=path, entries=contents[2:])
         return contents
 
     def getattr(self, path, fh=None):
-        pure_path = pathlib.PurePath(path)
-        if len(pure_path.parts) <= 3:
-            # either root or datastore, always a directory
+        datacenter, datastore, path_within_datastore = self.split_path(path)
+        if datacenter is None and path != "/" and not self.list_folder(path):
+            raise FuseOSError(ENOENT)
+        if not path_within_datastore:
+            # root, folder, datacenter or datastore, always a directory
             return dict(
                 st_mode=(S_IFDIR | 0o755),
                 st_ctime=0,
@@ -286,7 +314,12 @@ class VCenter(Operations):
             )
         else:
             if not path in self.cache:
-                return {}
+                # path accessed before its parent was listed, list the parent
+                # to populate the cache
+                parent = "/".join(path_within_datastore.split("/")[:-1])
+                self.list_datastore(datacenter, datastore, parent)
+            if not path in self.cache:
+                raise FuseOSError(ENOENT)
             return self.cache[path]
 
 
@@ -302,12 +335,14 @@ def add_subparser(subparsers):
     parser.add_argument(
         "--page-size",
         required=False,
+        type=int,
         default=2 * 1024 * 1024,
         help="Readahead cache page size (number of bytes to read ahead)",
     )
     parser.add_argument(
         "--cache-size",
         required=False,
+        type=int,
         default=100,
         help="Readahead cache size (number of pages)",
     )
@@ -318,6 +353,9 @@ def add_subparser(subparsers):
         action="append",
         dest="headers",
     )
+    add_user_agent_argument(parser)
+
+    add_retry_arguments(parser)
 
     parser.add_argument(
         "--access-log",
@@ -342,6 +380,9 @@ def run(args):
                 user=args.user,
                 password=args.password,
                 access_log=args.access_log,
+                timeout=args.timeout,
+                retries=args.retries,
+                user_agent=args.user_agent,
             ),
             args.page_size,
             args.cache_size,

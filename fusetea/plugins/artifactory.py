@@ -1,22 +1,27 @@
 #!/usr/bin/env python3
 
 import functools
+import os
 import time
 import pathlib
 
+from errno import EACCES
 from stat import S_IFDIR, S_IFREG
-from fusetea.utils.fusecompat import FUSE, Operations
+from fusetea.utils.fusecompat import FUSE, FuseOSError, Operations
 
 from fusetea.utils.accesslog import default_log_path, log_entry, open_log
 from fusetea.utils.readahead import Readahead
-from fusetea.utils.stealthysession import StealthySession
+from fusetea.utils.retry import add_retry_arguments, expect_length, request_with_retry
+from fusetea.utils.stealthysession import StealthySession, add_user_agent_argument
 
 
 class Artifactory(Operations):
-    def __init__(self, host, repokey, headers=None, access_log=None):
+    def __init__(self, host, repokey, headers=None, access_log=None, timeout=10, retries=5, user_agent=None):
         self.host = host
         self.repokey = repokey
-        self.session = StealthySession(headers=headers)
+        self.timeout = timeout
+        self.retries = retries
+        self.session = StealthySession(headers=headers, user_agent=user_agent)
         self._log = open_log("artifactory", access_log)
 
         self.check_authentication()
@@ -25,12 +30,29 @@ class Artifactory(Operations):
 
     def check_authentication(self):
         url = f"{self.host}ui/api/v1/ui/nativeBrowser/{self.repokey}"
-        response = self.session.get(url)
-        if response.status_code == 401:
-            print(
-                "[*] Authentication needed. Please authenticate and set the appropriate headers with the --header flag, or implement the authentication and send a Merge Request."
-            )
+        try:
+            self.request(url)
+        except FuseOSError as e:
+            if e.errno == EACCES:
+                print(
+                    "[*] Authentication needed. Please authenticate and set the appropriate headers with the --header flag, or implement the authentication and send a Merge Request."
+                )
+            else:
+                print(f"[!] Cannot access {url}: {os.strerror(e.errno)}")
             exit(1)
+
+    def request(self, url, validate=None, **kwargs):
+        return request_with_retry(
+            self.session,
+            "GET",
+            url,
+            self.timeout,
+            self.retries,
+            log=self._log,
+            label=self.repokey,
+            validate=validate,
+            **kwargs,
+        )
 
     def update_cache(self, data):
         now = time.time()
@@ -67,7 +89,7 @@ class Artifactory(Operations):
     def http_readdir(self, path):
         url = f"{self.host}ui/api/v1/ui/nativeBrowser/{self.repokey}{path}"
 
-        response = self.session.get(url)
+        response = self.request(url, validate=valid_json)
 
         self.update_cache(response.json())
 
@@ -75,6 +97,7 @@ class Artifactory(Operations):
 
     def read(self, path, size, offset, fh):
         headers = {}
+        validate = None
 
         # do not send the headers if we are asking for the whole file
         if not (offset == 0 and size >= self.cache[path]["st_size"]):
@@ -83,12 +106,14 @@ class Artifactory(Operations):
                     "Range": f"bytes={offset}-{(offset+size)-1}",
                 }
             )
+            validate = expect_length(min(size, self.cache[path]["st_size"] - offset))
 
         url = f"{self.host}ui/api/v1/download"
         params = {"repoKey": self.repokey, "path": path, "isNativeBrowsing": "true"}
 
-        response = self.session.get(
+        response = self.request(
             url,
+            validate=validate,
             headers=headers,
             params=params,
             verify=False,
@@ -110,6 +135,15 @@ class Artifactory(Operations):
         return self.cache[path]
 
 
+def valid_json(response):
+    # validate function for request_with_retry: listings must be JSON
+    try:
+        response.json()["children"]
+    except (ValueError, KeyError, TypeError):
+        return "invalid JSON listing"
+    return None
+
+
 def add_subparser(subparsers):
     parser = subparsers.add_parser("artifactory", help="Artifactory plugin")
     parser.add_argument(
@@ -120,12 +154,14 @@ def add_subparser(subparsers):
     parser.add_argument(
         "--page-size",
         required=False,
+        type=int,
         default=2 * 1024 * 1024,
         help="Readahead cache page size (number of bytes to read ahead)",
     )
     parser.add_argument(
         "--cache-size",
         required=False,
+        type=int,
         default=100,
         help="Readahead cache size (number of pages)",
     )
@@ -136,6 +172,8 @@ def add_subparser(subparsers):
         action="append",
         dest="headers",
     )
+    add_user_agent_argument(parser)
+    add_retry_arguments(parser)
     parser.add_argument(
         "--access-log",
         default=None,
@@ -151,7 +189,15 @@ def run(args):
 
     FUSE(
         Readahead(
-            Artifactory(args.host, args.repokey, headers=args.headers, access_log=args.access_log),
+            Artifactory(
+                args.host,
+                args.repokey,
+                headers=args.headers,
+                access_log=args.access_log,
+                timeout=args.timeout,
+                retries=args.retries,
+                user_agent=args.user_agent,
+            ),
             args.page_size,
             args.cache_size,
         ),
