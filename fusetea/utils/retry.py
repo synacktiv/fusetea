@@ -2,9 +2,9 @@ import time
 from errno import EACCES, EIO, ENOENT
 
 import requests
-from fusepy import FuseOSError
 
 from fusetea.utils.accesslog import log_entry
+from fusetea.utils.fusecompat import FuseOSError
 
 
 def request_with_retry(session, method, url, timeout, retries, log=None, label=None, validate=None, **kwargs):

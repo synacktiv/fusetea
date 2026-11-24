@@ -5,8 +5,8 @@ import pathlib
 from errno import ENOENT
 from urllib.parse import unquote, urlsplit
 
-from fusepy import FUSE, FuseOSError
 
+from fusetea.utils.fusecompat import FUSE, FuseOSError
 from fusetea.utils.httpresource import HTTPResource, add_common_arguments, dir_attrs
 from fusetea.utils.readahead import Readahead
 

@@ -4,10 +4,10 @@ import pathlib
 from errno import ENOENT, ENOTDIR
 from urllib.parse import unquote, urljoin, urlsplit
 
-from fusepy import FUSE, FuseOSError
 from bs4 import BeautifulSoup
 
 from fusetea.utils.accesslog import log_entry
+from fusetea.utils.fusecompat import FUSE, FuseOSError
 from fusetea.utils.httpresource import (
     HTTPResource,
     add_common_arguments,

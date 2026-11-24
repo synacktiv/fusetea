@@ -7,9 +7,9 @@ from stat import S_IFDIR, S_IFREG
 
 import requests
 import requests.auth
-from fusepy import FuseOSError, Operations
 
 from fusetea.utils.accesslog import default_log_path, log_entry, open_log
+from fusetea.utils.fusecompat import FuseOSError, Operations
 from fusetea.utils.retry import add_retry_arguments, request_with_retry
 from fusetea.utils.stealthysession import StealthySession, add_user_agent_argument
 
